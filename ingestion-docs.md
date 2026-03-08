@@ -113,14 +113,16 @@ GitHub recommends avoiding concurrent requests and handling rate limits carefull
 ```text
 GitHub REST API
     ↓
-Bronze: raw API page payloads + extraction metadata
-    ↓
-Silver: canonical issue-current model + normalized child tables
-    ↓
-Gold: dashboard marts for Metabase
-    ↓
+Bronze: raw API page payloads → Parquet on MinIO
+    ↓  (DuckDB + httpfs)
+Silver: canonical issue-current model + normalized child tables → Parquet on MinIO
+    ↓  (DuckDB + httpfs)
+Gold: dashboard marts → Parquet on MinIO
+    ↓  (DuckDB MotherDuck driver, Init SQL reads Parquet via httpfs)
 Metabase dashboard cards
-````
+```
+
+> **Implemented stack:** MinIO (S3-compatible object store), Parquet (hive-partitioned), DuckDB with httpfs for all transforms, Metabase v0.51.3 with MotherDuck DuckDB driver. No Postgres. No shared .duckdb volume.
 
 ---
 
@@ -132,26 +134,22 @@ Bronze is your audit trail. It should preserve what GitHub returned, page by pag
 
 ## 5.2 Storage pattern
 
-Store one raw file per page per run, for example:
+Store one raw file per page per run as Parquet, for example:
 
 ```text
 bronze/github/issues/
   repo_owner=apache/
   repo_name=airflow/
   extraction_date=2026-03-08/
-  run_id=manual__2026-03-08T10-00-00Z/
-  page_001.json
-  page_002.json
-  ...
+    page_001.parquet
+    page_002.parquet
+    ...
+    manifest.json
 ```
 
-If you also store a manifest file, that is even better:
+The manifest file records request metadata and page counts.
 
-```text
-manifest.json
-```
-
-with request metadata and page counts.
+> **Implemented:** storage is MinIO (S3-compatible) with Parquet format and hive-partitioned paths. No `run_id` subdirectory.
 
 ## 5.3 Bronze table: `bronze_github_issue_pages`
 
@@ -187,6 +185,8 @@ When a dashboard number looks wrong, bronze lets you answer:
 ## 6. Silver layer design
 
 Silver is where the raw page payloads become reusable relational assets.
+
+> **Implemented:** silver is written as Parquet files on MinIO (not a Postgres DB). DuckDB reads bronze Parquet via httpfs, transforms, and writes silver Parquet back to MinIO. Metabase connects to silver via DuckDB views defined in Init SQL (`read_parquet('s3://...')`). The persistent `.duckdb` file registers the same views for local development convenience.
 
 ## 6.1 Main table: `silver_github_issue_current`
 
@@ -464,6 +464,8 @@ Never advance the watermark immediately after the API call.
 ---
 
 ## 9. Airflow DAG design
+
+> **Status: Phase 4 — not yet implemented.** All pipeline stages currently run as manual Python scripts (`src/bronze/extract_issues.py`, `src/silver/process_bronze_to_silver.py`, `src/gold/build_gold_marts.py`). The Airflow design below documents the target automation state.
 
 ## DAG name
 
@@ -749,41 +751,45 @@ That lets the dashboard remain simple:
 
 ## 16. Recommended V1 implementation order
 
-## Phase 1
+## Phase 1 ✅
 
 Build:
 
-* bronze raw page landing
+* bronze raw page landing (Parquet on MinIO)
 * silver current issue table
 * PR filter logic
 * manual backfill run for one repo
 
-## Phase 2
+## Phase 2 ✅
 
 Add:
 
 * watermark state table
-* incremental weekly sync
 * label and assignee child tables
-* quality checks
+* incremental silver upsert via DuckDB
+* data quality approach
 
-## Phase 3
+## Phase 3 (current)
 
 Build gold marts:
 
-* daily flow
-* closure age
-* weekday rhythm
-* swing days
-* issue detail table
+* mart_issue_lifecycle
+* mart_issue_daily_flow
+* mart_issue_closure_age_monthly
+* mart_issue_weekday_rhythm
+* mart_issue_swing_days
+
+Connect Metabase manually with DuckDB Init SQL reading Parquet from MinIO.
 
 ## Phase 4
 
-Hook into Metabase:
+Automate with Airflow:
 
-* save questions/cards
-* wire date filter
-* validate dashboard numbers against GitHub UI samples
+* DAG `github_issues_ingestion_v1`
+* weekly incremental sync
+* watermark advancement
+* data quality checks
+* run summary metrics
 
 ---
 

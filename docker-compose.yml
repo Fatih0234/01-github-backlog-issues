@@ -1,40 +1,50 @@
 version: "3.9"
 
 services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: gitpulse
+      MINIO_ROOT_PASSWORD: gitpulse
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 gitpulse gitpulse &&
+        mc mb --ignore-existing local/gitpulse
+      "
+
   bronze-extractor:
     build: .
     env_file: .env
-    volumes:
-      - ./bronze:/app/bronze
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
 
-  # ── Stubs for Phase 2+ ─────────────────────────────────────────────────────
-  # postgres:
-  #   image: postgres:16
-  #   environment:
-  #     POSTGRES_USER: gitpulse
-  #     POSTGRES_PASSWORD: gitpulse
-  #     POSTGRES_DB: gitpulse
-  #   ports:
-  #     - "5432:5432"
-  #   volumes:
-  #     - pg_data:/var/lib/postgresql/data
+  metabase:
+    build:
+      context: .
+      dockerfile: Dockerfile.metabase
+    ports:
+      - "3000:3000"
+    environment:
+      MB_DB_TYPE: h2
+      MB_PLUGINS_DIR: /plugins
 
-  # airflow:
-  #   image: apache/airflow:2.9.2
-  #   depends_on:
-  #     - postgres
-  #   environment:
-  #     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-  #     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://gitpulse:gitpulse@postgres/gitpulse
-  #   ports:
-  #     - "8080:8080"
-
-  # metabase:
-  #   image: metabase/metabase:v0.51.3
-  #   depends_on:
-  #     - postgres
-  #   ports:
-  #     - "3000:3000"
-
-# volumes:
-#   pg_data:
+volumes:
+  minio_data:

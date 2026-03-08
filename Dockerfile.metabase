@@ -1,0 +1,19 @@
+FROM eclipse-temurin:21-jre-jammy
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://downloads.metabase.com/v0.57.6/metabase.jar -o /app/metabase.jar
+
+RUN mkdir -p /plugins && \
+    curl -fsSL https://github.com/motherduckdb/metabase_duckdb_driver/releases/download/1.4.3.1/duckdb.metabase-driver.jar \
+    -o /plugins/duckdb.metabase-driver.jar && \
+    chmod 644 /plugins/duckdb.metabase-driver.jar
+
+EXPOSE 3000
+
+ENV MB_PLUGINS_DIR=/plugins \
+    MB_DB_TYPE=h2
+
+CMD ["java", "-jar", "/app/metabase.jar"]
