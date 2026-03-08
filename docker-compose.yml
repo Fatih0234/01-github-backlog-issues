@@ -1,5 +1,23 @@
 version: "3.9"
 
+x-airflow-common-env: &airflow-common-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__FERNET_KEY: "Ec2mPI6NdOuq4dY1cJPsHL5kL344G6sLLiR6aeJCZEE="
+  AIRFLOW__CORE__INTERNAL_API_SECRET_KEY: "Rxuu1U6T_RP9BMj1bg_L3jvH7oJWp5eGysGDqfGow_M="
+  AIRFLOW__API_AUTH__JWT_SECRET: "GitPulse-JWT-Secret-Key-Shared-Across-All-Services-2024"
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-api-server:8080/execution/"
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: "/opt/airflow/config/simple_auth_manager_passwords.json"
+  AIRFLOW__LOGGING__WORKER_LOG_SERVER_HOST: "airflow-scheduler"
+  MINIO_ENDPOINT: "minio:9000"
+
+x-airflow-common-volumes: &airflow-common-volumes
+  - ./dags:/opt/airflow/dags
+  - ./:/opt/airflow/project
+  - ./config:/opt/airflow/config
+
 services:
   minio:
     image: minio/minio:latest
@@ -46,5 +64,80 @@ services:
       MB_DB_TYPE: h2
       MB_PLUGINS_DIR: /plugins
 
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    env_file: .env
+    environment:
+      <<: *airflow-common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes: *airflow-common-volumes
+    command: bash -c "airflow db migrate && airflow db migrate && airflow version"
+
+  airflow-api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    env_file: .env
+    environment:
+      <<: *airflow-common-env
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes: *airflow-common-volumes
+    command: api-server
+
+  airflow-dag-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    env_file: .env
+    environment:
+      <<: *airflow-common-env
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    volumes: *airflow-common-volumes
+    command: dag-processor
+
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    env_file: .env
+    environment:
+      <<: *airflow-common-env
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    volumes: *airflow-common-volumes
+    command: scheduler
+
 volumes:
   minio_data:
+  postgres_data:
