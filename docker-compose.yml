@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  bronze-extractor:
+    build: .
+    env_file: .env
+    volumes:
+      - ./bronze:/app/bronze
+
+  # ── Stubs for Phase 2+ ─────────────────────────────────────────────────────
+  # postgres:
+  #   image: postgres:16
+  #   environment:
+  #     POSTGRES_USER: gitpulse
+  #     POSTGRES_PASSWORD: gitpulse
+  #     POSTGRES_DB: gitpulse
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - pg_data:/var/lib/postgresql/data
+
+  # airflow:
+  #   image: apache/airflow:2.9.2
+  #   depends_on:
+  #     - postgres
+  #   environment:
+  #     AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  #     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://gitpulse:gitpulse@postgres/gitpulse
+  #   ports:
+  #     - "8080:8080"
+
+  # metabase:
+  #   image: metabase/metabase:v0.51.3
+  #   depends_on:
+  #     - postgres
+  #   ports:
+  #     - "3000:3000"
+
+# volumes:
+#   pg_data:
