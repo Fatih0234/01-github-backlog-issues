@@ -1,5 +1,10 @@
 FROM apache/airflow:3.0.0-python3.12
 
+# Bake the SimpleAuthManager passwords file into the image so no host
+# config/ mount is needed. This is a local-dev password only.
+RUN mkdir -p /opt/airflow/config && \
+    echo '{"admin": "admin"}' > /opt/airflow/config/simple_auth_manager_passwords.json
+
 # BashOperator moved to providers-standard in Airflow 3.x.
 # Install project dependencies as the airflow user (required by the Airflow base image).
 # Source code is volume-mounted at runtime (/opt/airflow/project).
