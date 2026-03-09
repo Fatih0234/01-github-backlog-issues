@@ -56,12 +56,20 @@ def run_checks(repo_owner: str, repo_name: str) -> None:
         f"s3://{bucket}/silver/issue_current"
         f"/repo_owner={repo_owner}/repo_name={repo_name}/**/*.parquet"
     )
+    gold_glob = (
+        f"s3://{bucket}/gold/mart_issue_lifecycle"
+        f"/repo_owner={repo_owner}/repo_name={repo_name}/**/*.parquet"
+    )
     conn = duckdb.connect(":memory:")
     _setup_duckdb(conn)
 
     conn.execute(f"""
         CREATE OR REPLACE VIEW silver AS
         SELECT * FROM read_parquet('{silver_glob}', hive_partitioning=true, union_by_name=true)
+    """)
+    conn.execute(f"""
+        CREATE OR REPLACE VIEW gold AS
+        SELECT * FROM read_parquet('{gold_glob}', hive_partitioning=true, union_by_name=true)
     """)
 
     assert_sql(
@@ -75,6 +83,17 @@ def run_checks(repo_owner: str, repo_name: str) -> None:
         "SELECT COUNT(*) FROM silver WHERE closed_at IS NOT NULL AND closed_at < created_at - INTERVAL '1 hour'",
         expected=0,
         msg="closed_at before created_at (>1h tolerance)",
+    )
+    assert_sql(
+        conn,
+        """SELECT COUNT(*)
+           FROM gold g
+           JOIN silver s ON s.issue_id   = g.issue_id
+                        AND s.repo_owner = g.repo_owner
+                        AND s.repo_name  = g.repo_name
+           WHERE s.is_pull_request = TRUE""",
+        expected=0,
+        msg="PR contamination in gold mart_issue_lifecycle",
     )
     conn.close()
     log.info("All DQ checks passed.")

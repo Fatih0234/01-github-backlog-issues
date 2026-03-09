@@ -93,6 +93,26 @@ def _transform_and_write_silver(conn: duckdb.DuckDBPyConnection, bucket: str) ->
             TRY_CAST("comments"  AS BIGINT)            AS comment_count,
             ("pull_request" IS NOT NULL
              AND "pull_request" NOT IN ('None', 'null')) AS is_pull_request,
+            -- author fields (from user JSON column)
+            json_extract_string("user", '$.login')     AS author_login,
+            TRY_CAST(json_extract_string("user", '$.id') AS BIGINT) AS author_id,
+            json_extract_string("user", '$.type')      AS author_type,
+            -- assignee count
+            TRY_CAST(json_array_length(
+                CASE WHEN "assignees" IN ('None', 'null', '') THEN '[]'
+                     ELSE "assignees" END
+            ) AS BIGINT)                               AS assignee_count,
+            -- milestone
+            json_extract_string("milestone", '$.title') AS milestone_title,
+            -- closed_by
+            json_extract_string("closed_by", '$.login') AS closed_by_login,
+            -- performed_via_github_app
+            json_extract_string("performed_via_github_app", '$.name') AS performed_via_github_app_name,
+            -- pull_request URLs
+            json_extract_string("pull_request", '$.url')       AS pull_request_url,
+            json_extract_string("pull_request", '$.html_url')  AS pull_request_html_url,
+            -- body
+            "body",
             CURRENT_TIMESTAMP                          AS record_loaded_at
         FROM ranked
         WHERE rn = 1
