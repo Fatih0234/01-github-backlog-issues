@@ -47,6 +47,9 @@ MINIO_ACCESS_KEY=gitpulse
 MINIO_SECRET_KEY=gitpulse
 MINIO_BUCKET=gitpulse
 DUCKDB_FILE=/tmp/gitpulse.duckdb
+METABASE_URL=http://localhost:3000
+METABASE_EMAIL=admin@gitpulse.com
+METABASE_PASSWORD=password
 ```
 
 ### 3. Start infrastructure
