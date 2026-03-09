@@ -9,14 +9,13 @@ x-airflow-common-env: &airflow-common-env
   AIRFLOW__API_AUTH__JWT_SECRET: "${AIRFLOW_JWT_SECRET}"
   AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-api-server:8080/execution/"
   AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
-  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: "/opt/airflow/config/simple_auth_manager_passwords.json"
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS: "admin:admin"
   AIRFLOW__LOGGING__WORKER_LOG_SERVER_HOST: "airflow-scheduler"
   MINIO_ENDPOINT: "minio:9000"
 
 x-airflow-common-volumes: &airflow-common-volumes
   - ./dags:/opt/airflow/dags
   - ./:/opt/airflow/project
-  - ./config:/opt/airflow/config
 
 services:
   minio:

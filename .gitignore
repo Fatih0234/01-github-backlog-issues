@@ -1,7 +1,6 @@
 .env
 bronze/
 architecture.png
-config/simple_auth_manager_passwords.json
 .DS_Store
 __pycache__/
 .venv/
