@@ -4,9 +4,9 @@ x-airflow-common-env: &airflow-common-env
   AIRFLOW__CORE__EXECUTOR: LocalExecutor
   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
   AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-  AIRFLOW__CORE__FERNET_KEY: "Ec2mPI6NdOuq4dY1cJPsHL5kL344G6sLLiR6aeJCZEE="
-  AIRFLOW__CORE__INTERNAL_API_SECRET_KEY: "Rxuu1U6T_RP9BMj1bg_L3jvH7oJWp5eGysGDqfGow_M="
-  AIRFLOW__API_AUTH__JWT_SECRET: "GitPulse-JWT-Secret-Key-Shared-Across-All-Services-2024"
+  AIRFLOW__CORE__FERNET_KEY: "${AIRFLOW_FERNET_KEY}"
+  AIRFLOW__CORE__INTERNAL_API_SECRET_KEY: "${AIRFLOW_INTERNAL_API_SECRET_KEY}"
+  AIRFLOW__API_AUTH__JWT_SECRET: "${AIRFLOW_JWT_SECRET}"
   AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-api-server:8080/execution/"
   AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
   AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: "/opt/airflow/config/simple_auth_manager_passwords.json"
@@ -26,8 +26,8 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: gitpulse
-      MINIO_ROOT_PASSWORD: gitpulse
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-gitpulse}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-gitpulse}"
     volumes:
       - minio_data:/data
     healthcheck:
@@ -41,9 +41,12 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-gitpulse}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-gitpulse}"
     entrypoint: >
       /bin/sh -c "
-        mc alias set local http://minio:9000 gitpulse gitpulse &&
+        mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD &&
         mc mb --ignore-existing local/gitpulse
       "
 
