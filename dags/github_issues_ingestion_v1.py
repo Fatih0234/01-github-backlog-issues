@@ -52,6 +52,17 @@ with DAG(
         bash_command="cd " + PROJECT_DIR + " && python src/gold/build_gold_marts.py",
     )
 
+    validate_gold = BashOperator(
+        task_id="validate_gold",
+        bash_command=(
+            "cd " + PROJECT_DIR + " && "
+            "python src/dq/run_checks.py "
+            "--repo-owner {{ params.repo_owner }} "
+            "--repo-name {{ params.repo_name }} "
+            "--mode gold"
+        ),
+    )
+
     emit_summary = BashOperator(
         task_id="emit_summary",
         bash_command=(
@@ -59,4 +70,4 @@ with DAG(
         ),
     )
 
-    fetch_bronze >> process_silver >> run_dq >> build_gold >> emit_summary
+    fetch_bronze >> process_silver >> run_dq >> build_gold >> validate_gold >> emit_summary

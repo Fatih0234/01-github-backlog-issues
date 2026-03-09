@@ -50,7 +50,7 @@ def assert_sql(
     log.info("DQ PASS [%s]", msg)
 
 
-def run_checks(repo_owner: str, repo_name: str) -> None:
+def run_checks(repo_owner: str, repo_name: str, mode: str = "silver") -> None:
     bucket = os.environ.get("MINIO_BUCKET", "gitpulse")
     silver_glob = (
         f"s3://{bucket}/silver/issue_current"
@@ -63,40 +63,48 @@ def run_checks(repo_owner: str, repo_name: str) -> None:
     conn = duckdb.connect(":memory:")
     _setup_duckdb(conn)
 
-    conn.execute(f"""
-        CREATE OR REPLACE VIEW silver AS
-        SELECT * FROM read_parquet('{silver_glob}', hive_partitioning=true, union_by_name=true)
-    """)
-    conn.execute(f"""
-        CREATE OR REPLACE VIEW gold AS
-        SELECT * FROM read_parquet('{gold_glob}', hive_partitioning=true, union_by_name=true)
-    """)
+    if mode == "silver":
+        conn.execute(f"""
+            CREATE OR REPLACE VIEW silver AS
+            SELECT * FROM read_parquet('{silver_glob}', hive_partitioning=true, union_by_name=true)
+        """)
+        assert_sql(
+            conn,
+            "SELECT COUNT(*) FROM silver WHERE issue_id IS NULL",
+            expected=0,
+            msg="Null issue_id in silver",
+        )
+        assert_sql(
+            conn,
+            "SELECT COUNT(*) FROM silver WHERE closed_at IS NOT NULL AND closed_at < created_at - INTERVAL '1 hour'",
+            expected=0,
+            msg="closed_at before created_at (>1h tolerance)",
+        )
+    elif mode == "gold":
+        conn.execute(f"""
+            CREATE OR REPLACE VIEW silver AS
+            SELECT * FROM read_parquet('{silver_glob}', hive_partitioning=true, union_by_name=true)
+        """)
+        conn.execute(f"""
+            CREATE OR REPLACE VIEW gold AS
+            SELECT * FROM read_parquet('{gold_glob}', hive_partitioning=true, union_by_name=true)
+        """)
+        assert_sql(
+            conn,
+            """SELECT COUNT(*)
+               FROM gold g
+               JOIN silver s ON s.issue_id   = g.issue_id
+                            AND s.repo_owner = g.repo_owner
+                            AND s.repo_name  = g.repo_name
+               WHERE s.is_pull_request = TRUE""",
+            expected=0,
+            msg="PR contamination in gold mart_issue_lifecycle",
+        )
+    else:
+        raise ValueError(f"Unknown mode: {mode!r}. Use 'silver' or 'gold'.")
 
-    assert_sql(
-        conn,
-        "SELECT COUNT(*) FROM silver WHERE issue_id IS NULL",
-        expected=0,
-        msg="Null issue_id in silver",
-    )
-    assert_sql(
-        conn,
-        "SELECT COUNT(*) FROM silver WHERE closed_at IS NOT NULL AND closed_at < created_at - INTERVAL '1 hour'",
-        expected=0,
-        msg="closed_at before created_at (>1h tolerance)",
-    )
-    assert_sql(
-        conn,
-        """SELECT COUNT(*)
-           FROM gold g
-           JOIN silver s ON s.issue_id   = g.issue_id
-                        AND s.repo_owner = g.repo_owner
-                        AND s.repo_name  = g.repo_name
-           WHERE s.is_pull_request = TRUE""",
-        expected=0,
-        msg="PR contamination in gold mart_issue_lifecycle",
-    )
     conn.close()
-    log.info("All DQ checks passed.")
+    log.info("All DQ checks passed (%s mode).", mode)
 
 
 def main() -> None:
@@ -105,12 +113,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="DQ: run data quality checks")
     parser.add_argument("--repo-owner", default=None)
     parser.add_argument("--repo-name", default=None)
+    parser.add_argument("--mode", default="silver", choices=["silver", "gold"])
     args = parser.parse_args()
 
     repo_owner = args.repo_owner or os.environ.get("REPO_OWNER", "apache")
     repo_name = args.repo_name or os.environ.get("REPO_NAME", "airflow")
 
-    run_checks(repo_owner=repo_owner, repo_name=repo_name)
+    run_checks(repo_owner=repo_owner, repo_name=repo_name, mode=args.mode)
 
 
 if __name__ == "__main__":
