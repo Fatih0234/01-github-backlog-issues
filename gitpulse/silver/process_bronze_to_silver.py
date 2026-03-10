@@ -255,10 +255,9 @@ def _register_views(conn: duckdb.DuckDBPyConnection, bucket: str) -> None:
         log.info("View registered: %s", view_name)
 
 
-def main() -> None:
+def run_silver() -> None:
     bucket = os.environ.get("MINIO_BUCKET", "gitpulse")
     duckdb_file = os.environ.get("DUCKDB_FILE", "/tmp/gitpulse.duckdb")
-
     log.info("Opening DuckDB at %s", duckdb_file)
     conn = duckdb.connect(duckdb_file)
     try:
@@ -268,6 +267,10 @@ def main() -> None:
         log.info("Silver processing complete.")
     finally:
         conn.close()
+
+
+def main() -> None:
+    run_silver()
 
 
 if __name__ == "__main__":

@@ -401,10 +401,9 @@ def _cleanup_temp_tables(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute(f"DROP TABLE IF EXISTS {tbl}")
 
 
-def main() -> None:
+def run_gold() -> None:
     bucket = os.environ.get("MINIO_BUCKET", "gitpulse")
     duckdb_file = os.environ.get("DUCKDB_FILE", "/tmp/gitpulse.duckdb")
-
     log.info("Opening DuckDB at %s", duckdb_file)
     conn = duckdb.connect(duckdb_file)
     try:
@@ -422,6 +421,10 @@ def main() -> None:
         log.info("Gold processing complete.")
     finally:
         conn.close()
+
+
+def main() -> None:
+    run_gold()
 
 
 if __name__ == "__main__":

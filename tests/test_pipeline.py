@@ -7,14 +7,11 @@ The watermark test requires a live MinIO — mark with -m integration to include
 """
 
 import os
-import sys
 
 import duckdb
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.dq.run_checks import assert_sql
+from gitpulse.dq.run_checks import assert_sql
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +110,7 @@ def test_dq_pr_in_gold_fails():
 
 @pytest.mark.integration
 def test_watermark_reads_from_silver():
-    from src.bronze.extract_issues import read_watermark
+    from gitpulse.bronze.extract_issues import read_watermark
 
     repo_owner = os.environ.get("REPO_OWNER", "apache")
     repo_name = os.environ.get("REPO_NAME", "airflow")

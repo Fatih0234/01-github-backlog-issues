@@ -13,6 +13,7 @@ x-airflow-common-env: &airflow-common-env
   AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: "/opt/airflow/config/simple_auth_manager_passwords.json"
   AIRFLOW__LOGGING__WORKER_LOG_SERVER_HOST: "airflow-scheduler"
   MINIO_ENDPOINT: "minio:9000"
+  PYTHONPATH: /opt/airflow/project
 
 x-airflow-common-volumes: &airflow-common-volumes
   - ./dags:/opt/airflow/dags
@@ -49,13 +50,6 @@ services:
         mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD &&
         mc mb --ignore-existing local/gitpulse
       "
-
-  bronze-extractor:
-    build: .
-    env_file: .env
-    depends_on:
-      minio-init:
-        condition: service_completed_successfully
 
   metabase:
     build:

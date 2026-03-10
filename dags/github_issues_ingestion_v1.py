@@ -3,71 +3,65 @@ Airflow DAG: github_issues_ingestion_v1
 Weekly incremental sync of GitHub issues → Bronze → Silver → DQ → Gold → summary.
 """
 
+from __future__ import annotations
+
 from datetime import datetime
 
-from airflow import DAG
-from airflow.providers.standard.operators.bash import BashOperator
+from airflow.sdk import dag, task
 
-PROJECT_DIR = "/opt/airflow/project"
 
-with DAG(
+@dag(
     dag_id="github_issues_ingestion_v1",
-    schedule="0 4 * * 0",  # Sunday 04:00 UTC
+    schedule="0 4 * * 0",
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    params={
-        "repo_owner": "apache",
-        "repo_name": "airflow",
-    },
+    params={"repo_owner": "apache", "repo_name": "airflow"},
     tags=["github", "issues", "gitpulse"],
-) as dag:
+)
+def github_issues_ingestion_v1():
+    @task
+    def fetch_bronze(**context):
+        import os
 
-    fetch_bronze = BashOperator(
-        task_id="fetch_bronze",
-        bash_command=(
-            "cd " + PROJECT_DIR + " && "
-            "python src/bronze/extract_issues.py "
-            "--repo-owner {{ params.repo_owner }} "
-            "--repo-name {{ params.repo_name }}"
-        ),
-    )
+        from gitpulse.bronze.extract_issues import read_watermark, run_extraction
 
-    process_silver = BashOperator(
-        task_id="process_silver",
-        bash_command="cd " + PROJECT_DIR + " && python src/silver/process_bronze_to_silver.py",
-    )
+        p = context["params"]
+        token = os.environ["GITHUB_TOKEN"]
+        since = read_watermark(p["repo_owner"], p["repo_name"])
+        run_extraction(token=token, repo_owner=p["repo_owner"], repo_name=p["repo_name"], since=since)
 
-    run_dq = BashOperator(
-        task_id="run_dq",
-        bash_command=(
-            "cd " + PROJECT_DIR + " && "
-            "python src/dq/run_checks.py "
-            "--repo-owner {{ params.repo_owner }} "
-            "--repo-name {{ params.repo_name }}"
-        ),
-    )
+    @task
+    def process_silver():
+        from gitpulse.silver.process_bronze_to_silver import run_silver
 
-    build_gold = BashOperator(
-        task_id="build_gold",
-        bash_command="cd " + PROJECT_DIR + " && python src/gold/build_gold_marts.py",
-    )
+        run_silver()
 
-    validate_gold = BashOperator(
-        task_id="validate_gold",
-        bash_command=(
-            "cd " + PROJECT_DIR + " && "
-            "python src/dq/run_checks.py "
-            "--repo-owner {{ params.repo_owner }} "
-            "--repo-name {{ params.repo_name }} "
-            "--mode gold"
-        ),
-    )
+    @task
+    def run_dq(**context):
+        from gitpulse.dq.run_checks import run_checks
 
-    emit_summary = BashOperator(
-        task_id="emit_summary",
-        bash_command=(
-            "echo 'Pipeline complete for {{ params.repo_owner }}/{{ params.repo_name }}'"
-        ),
-    )
+        p = context["params"]
+        run_checks(repo_owner=p["repo_owner"], repo_name=p["repo_name"], mode="silver")
 
-    fetch_bronze >> process_silver >> run_dq >> build_gold >> validate_gold >> emit_summary
+    @task
+    def build_gold():
+        from gitpulse.gold.build_gold_marts import run_gold
+
+        run_gold()
+
+    @task
+    def validate_gold(**context):
+        from gitpulse.dq.run_checks import run_checks
+
+        p = context["params"]
+        run_checks(repo_owner=p["repo_owner"], repo_name=p["repo_name"], mode="gold")
+
+    @task
+    def emit_summary(**context):
+        p = context["params"]
+        print(f"Pipeline complete for {p['repo_owner']}/{p['repo_name']}")
+
+    fetch_bronze() >> process_silver() >> run_dq() >> build_gold() >> validate_gold() >> emit_summary()
+
+
+github_issues_ingestion_v1()

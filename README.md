@@ -80,16 +80,16 @@ You can run each layer directly without Airflow:
 
 ```bash
 # Bronze: fetch raw issues from GitHub → MinIO Parquet
-uv run python src/bronze/extract_issues.py
+uv run python -m gitpulse.bronze.extract_issues
 
 # Silver: deduplicate + flatten → MinIO Parquet
-uv run python src/silver/process_bronze_to_silver.py
+uv run python -m gitpulse.silver.process_bronze_to_silver
 
 # Data quality checks
-uv run python src/dq/run_checks.py
+uv run python -m gitpulse.dq.run_checks
 
 # Gold: build dashboard marts → MinIO Parquet
-uv run python src/gold/build_gold_marts.py
+uv run python -m gitpulse.gold.build_gold_marts
 ```
 
 ### 6. Trigger via Airflow
