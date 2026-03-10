@@ -1,22 +1,18 @@
 """
-Bronze extraction: fetch GitHub issues page-by-page, save as Parquet to MinIO.
+Bronze extraction: fetch GitHub issues page-by-page and persist raw issue JSON plus
+run metadata into run-scoped Parquet files.
 """
 
+from __future__ import annotations
+
 import argparse
-import io
+import json
 import logging
 import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-import json
-
-import boto3
-import pyarrow as pa
-import pyarrow.parquet as pq
 import requests
-from botocore.client import Config
-from dotenv import load_dotenv
 from tenacity import (
     before_sleep_log,
     retry,
@@ -25,13 +21,16 @@ from tenacity import (
     wait_exponential,
 )
 
-load_dotenv()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    stream=sys.stdout,
+from gitpulse.runtime import (
+    RuntimeConfig,
+    WatermarkReadError,
+    bronze_manifest_relative_path,
+    bronze_page_relative_path,
+    configure_logging,
+    get_latest_successful_manifest,
+    silver_dataset_relative_path,
 )
+
 log = logging.getLogger(__name__)
 
 GITHUB_API_BASE = "https://api.github.com"
@@ -46,9 +45,17 @@ def _is_retryable(exc: BaseException) -> bool:
     )
 
 
+def _coerce_datetime(value: object) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    raise TypeError(f"Unsupported datetime value {value!r}")
+
+
 def make_session(token: str) -> requests.Session:
-    s = requests.Session()
-    s.headers.update(
+    session = requests.Session()
+    session.headers.update(
         {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -56,7 +63,7 @@ def make_session(token: str) -> requests.Session:
             "User-Agent": "gitpulse",
         }
     )
-    return s
+    return session
 
 
 @retry(
@@ -66,19 +73,19 @@ def make_session(token: str) -> requests.Session:
     before_sleep=before_sleep_log(log, logging.WARNING),
 )
 def fetch_page(session: requests.Session, url: str, params: dict | None = None) -> requests.Response:
-    resp = session.get(url, params=params, timeout=30)
+    response = session.get(url, params=params, timeout=30)
     log.info(
         "GET %s status=%s rate_limit_remaining=%s",
-        resp.url,
-        resp.status_code,
-        resp.headers.get("X-RateLimit-Remaining", "?"),
+        response.url,
+        response.status_code,
+        response.headers.get("X-RateLimit-Remaining", "?"),
     )
-    resp.raise_for_status()
-    return resp
+    response.raise_for_status()
+    return response
 
 
 def parse_next_url(link_header: str | None) -> str | None:
-    """Parse the `rel="next"` URL from the GitHub Link header."""
+    """Parse the `rel=\"next\"` URL from the GitHub Link header."""
     if not link_header:
         return None
     for part in link_header.split(","):
@@ -90,104 +97,89 @@ def parse_next_url(link_header: str | None) -> str | None:
     return None
 
 
-def read_watermark(repo_owner: str, repo_name: str) -> str | None:
+def read_watermark(
+    repo_owner: str,
+    repo_name: str,
+    config: RuntimeConfig | None = None,
+) -> str | None:
     """
-    Read last_successful_watermark_updated_at from silver sync_state parquet.
-    Returns (watermark - 30 days).isoformat() or None if file doesn't exist (full fetch).
-    """
-    import duckdb
+    Read the watermark from repo-scoped silver sync_state.
 
-    bucket = os.environ.get("MINIO_BUCKET", "gitpulse")
-    endpoint = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
-    access_key = os.environ.get("MINIO_ACCESS_KEY", "gitpulse")
-    secret_key = os.environ.get("MINIO_SECRET_KEY", "gitpulse")
-    sync_state_path = f"s3://{bucket}/silver/sync_state/data.parquet"
+    Returns ``None`` only when the repo has never completed a successful silver run.
+    Any other read failure raises ``WatermarkReadError`` so the pipeline fails closed.
+    """
+
+    runtime = config or RuntimeConfig.from_env()
+    path = silver_dataset_relative_path("sync_state", repo_owner, repo_name)
+    if not runtime.exists(path):
+        return None
+
     try:
-        conn = duckdb.connect(":memory:")
-        conn.execute("INSTALL httpfs; LOAD httpfs;")
-        conn.execute(f"""
-            CREATE OR REPLACE SECRET minio (
-                TYPE S3,
-                KEY_ID '{access_key}',
-                SECRET '{secret_key}',
-                ENDPOINT '{endpoint}',
-                USE_SSL false,
-                URL_STYLE 'path'
-            );
-        """)
-        row = conn.execute(
-            f"SELECT last_successful_watermark_updated_at FROM read_parquet('{sync_state_path}') "
-            f"WHERE repo_owner = '{repo_owner}' AND repo_name = '{repo_name}' LIMIT 1"
-        ).fetchone()
-        conn.close()
-        if row is None or row[0] is None:
-            return None
-        watermark_dt = datetime.fromisoformat(str(row[0]))
-        since_dt = watermark_dt - timedelta(days=30)
-        since_str = since_dt.isoformat()
-        log.info("Watermark found: %s → using since=%s", row[0], since_str)
-        return since_str
-    except Exception as exc:
-        log.info("No watermark found (%s) — full fetch mode.", exc)
+        rows = runtime.read_small_parquet(path)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:  # pragma: no cover - defensive storage error boundary
+        raise WatermarkReadError(
+            f"Failed to read sync_state for {repo_owner}/{repo_name}"
+        ) from exc
+
+    if not rows:
         return None
 
-
-def make_s3_client():
-    endpoint = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
-    access_key = os.environ.get("MINIO_ACCESS_KEY", "gitpulse")
-    secret_key = os.environ.get("MINIO_SECRET_KEY", "gitpulse")
-    return boto3.client(
-        "s3",
-        endpoint_url=f"http://{endpoint}",
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        config=Config(signature_version="s3v4"),
-        region_name="us-east-1",
-    )
-
-
-def _normalize(v):
-    """Scalars → str, dicts/lists → JSON string, None → None."""
-    if v is None:
+    watermark = rows[0].get("last_successful_watermark_updated_at")
+    if watermark is None:
         return None
-    if isinstance(v, (dict, list)):
-        return json.dumps(v)
-    return str(v)
+
+    since_dt = _coerce_datetime(watermark) - timedelta(days=30)
+    since = since_dt.isoformat()
+    log.info("Watermark found: %s -> using since=%s", watermark, since)
+    return since
 
 
-def upload_parquet(s3, bucket: str, key: str, records: list[dict]) -> None:
-    """Convert list of dicts to Parquet bytes and upload to MinIO."""
-    normalized = [{k: _normalize(v) for k, v in rec.items()} for rec in records]
-    table = pa.Table.from_pylist(normalized)
-    buf = io.BytesIO()
-    pq.write_table(table, buf)
-    buf.seek(0)
-    s3.put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
-    log.info("Uploaded s3://%s/%s (%d rows)", bucket, key, len(records))
+def _build_bronze_rows(
+    records: list[dict],
+    *,
+    run_id: str,
+    repo_owner: str,
+    repo_name: str,
+    page_number: int,
+    fetched_at: str,
+) -> list[dict]:
+    rows: list[dict] = []
+    for record in records:
+        rows.append(
+            {
+                "run_id": run_id,
+                "repo_owner": repo_owner,
+                "repo_name": repo_name,
+                "page_number": page_number,
+                "fetched_at": fetched_at,
+                "issue_id": record.get("id"),
+                "issue_updated_at": record.get("updated_at"),
+                "payload_json": json.dumps(record, sort_keys=True, separators=(",", ":")),
+            }
+        )
+    return rows
 
 
 def run_extraction(
     token: str,
     repo_owner: str,
     repo_name: str,
+    *,
+    config: RuntimeConfig | None = None,
     max_pages: int | None = None,
     since: str | None = None,
-) -> None:
-    run_id = f"manual__{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%SZ')}"
-    extraction_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    bucket = os.environ.get("MINIO_BUCKET", "gitpulse")
+    run_id: str | None = None,
+    now: datetime | None = None,
+) -> dict:
+    runtime = config or RuntimeConfig.from_env()
+    started = now or datetime.now(timezone.utc)
+    effective_run_id = run_id or f"manual__{started.strftime('%Y-%m-%dT%H-%M-%SZ')}"
 
-    prefix = (
-        f"bronze/github/issues"
-        f"/repo_owner={repo_owner}"
-        f"/repo_name={repo_name}"
-        f"/extraction_date={extraction_date}"
-    )
-
-    s3 = make_s3_client()
     session = make_session(token)
-
     initial_url = f"{GITHUB_API_BASE}/repos/{repo_owner}/{repo_name}/issues"
+
     if since:
         log.info("Incremental mode: since=%s", since)
     else:
@@ -202,47 +194,87 @@ def run_extraction(
     if since:
         initial_params["since"] = since
 
-    started_at = datetime.now(timezone.utc).isoformat()
-    page_num = 0
+    pages_fetched = 0
+    records_fetched = 0
+    max_issue_updated_at: str | None = None
     next_url: str | None = initial_url
     next_params: dict | None = initial_params
     final_url = initial_url
 
     while next_url:
-        if max_pages and page_num >= max_pages:
+        if max_pages and pages_fetched >= max_pages:
             log.info("Reached MAX_PAGES=%d, stopping.", max_pages)
             break
-        page_num += 1
 
-        resp = fetch_page(session, next_url, params=next_params if page_num == 1 else None)
-        final_url = resp.url
-        payload = resp.json()
-
-        key = f"{prefix}/page_{page_num:03d}.parquet"
-        upload_parquet(s3, bucket, key, payload)
-
-        next_url = parse_next_url(resp.headers.get("Link"))
-        next_params = None  # params are encoded in next_url after page 1
+        response = fetch_page(session, next_url, params=next_params)
+        final_url = str(response.url)
+        payload = response.json()
+        next_url = parse_next_url(response.headers.get("Link"))
+        next_params = None
 
         if not payload:
-            log.info("Empty page — stopping.")
+            log.info("Empty page returned, finishing run without writing an empty page file.")
             break
+
+        pages_fetched += 1
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        rows = _build_bronze_rows(
+            payload,
+            run_id=effective_run_id,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            page_number=pages_fetched,
+            fetched_at=fetched_at,
+        )
+        runtime.write_small_parquet(
+            bronze_page_relative_path(repo_owner, repo_name, effective_run_id, pages_fetched),
+            rows,
+        )
+        records_fetched += len(rows)
+
+        for record in payload:
+            updated_at = record.get("updated_at")
+            if updated_at and (max_issue_updated_at is None or updated_at > max_issue_updated_at):
+                max_issue_updated_at = updated_at
 
     finished_at = datetime.now(timezone.utc).isoformat()
     manifest = {
-        "run_id": run_id,
-        "repo": f"{repo_owner}/{repo_name}",
-        "pages_fetched": str(page_num),
-        "started_at": started_at,
+        "run_id": effective_run_id,
+        "repo_owner": repo_owner,
+        "repo_name": repo_name,
+        "status": "success",
+        "started_at": started.isoformat(),
         "finished_at": finished_at,
+        "since": since,
+        "pages_fetched": pages_fetched,
+        "records_fetched": records_fetched,
+        "max_issue_updated_at": max_issue_updated_at,
         "final_url": final_url,
     }
-    manifest_key = f"{prefix}/manifest.parquet"
-    upload_parquet(s3, bucket, manifest_key, [manifest])
-    log.info("Done. pages_fetched=%d", page_num)
+    runtime.append_small_parquet(bronze_manifest_relative_path(repo_owner, repo_name), [manifest])
+    log.info(
+        "Bronze extraction complete for %s/%s run_id=%s pages=%d records=%d",
+        repo_owner,
+        repo_name,
+        effective_run_id,
+        pages_fetched,
+        records_fetched,
+    )
+    return manifest
+
+
+def latest_successful_run(
+    repo_owner: str,
+    repo_name: str,
+    config: RuntimeConfig | None = None,
+) -> dict | None:
+    runtime = config or RuntimeConfig.from_env()
+    return get_latest_successful_manifest(runtime, repo_owner, repo_name)
 
 
 def main() -> None:
+    configure_logging()
+
     parser = argparse.ArgumentParser(description="Bronze: extract GitHub issues")
     parser.add_argument("--max-pages", type=int, default=None, help="Limit pages for test runs")
     parser.add_argument("--repo-owner", default=None)
@@ -266,7 +298,6 @@ def main() -> None:
     )
 
     since = args.since or read_watermark(repo_owner, repo_name)
-
     run_extraction(
         token=token,
         repo_owner=repo_owner,

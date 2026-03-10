@@ -8,7 +8,11 @@ Creates (idempotently):
   - All 16 cards wired into the dashboard
 
 Usage:
-    uv run python src/dashboard/setup_metabase.py
+    uv run python -m gitpulse.dashboard.setup_metabase
+
+Notes:
+    The dashboard is fed by snapshot-based lifecycle marts. Reopened issues can
+    still distort historical backlog direction until an event-history model is added.
 """
 
 import logging

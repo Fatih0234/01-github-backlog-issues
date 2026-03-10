@@ -50,6 +50,8 @@ Key variables:
 GITHUB_TOKEN=ghp_...           # required
 REPO_OWNER=apache              # default
 REPO_NAME=airflow              # default
+GITPULSE_STORAGE_BACKEND=s3    # s3 for MinIO/docker, local for temp-dir tests
+GITPULSE_LOCAL_DATA_ROOT=...   # required only when storage backend is local
 MINIO_ENDPOINT=localhost:9000
 MINIO_ACCESS_KEY=gitpulse
 MINIO_SECRET_KEY=gitpulse
@@ -98,19 +100,28 @@ The DAG `github_issues_ingestion_v1` runs automatically every Sunday at 04:00 UT
 
 1. Open http://localhost:8080 and log in with `admin` / `admin`
 2. Find `github_issues_ingestion_v1` and click the ▶ (Trigger DAG) button
-3. Watch task states: `fetch_bronze → process_silver → run_dq → build_gold → emit_summary`
+3. Watch task states: `fetch_bronze → process_silver → run_dq → build_gold → validate_gold → emit_summary`
 
 ---
 
 ## Tests
 
-Unit tests run in-memory (no infrastructure needed):
+Default tests are local-first and do not require MinIO, Airflow, or Metabase:
 
 ```bash
 uv run --group dev pytest
 ```
 
-Integration tests (require live MinIO with data already written):
+The suite exercises Bronze → Silver → Gold end-to-end against temp local storage and
+captures the regression cases that previously slipped through:
+
+- run-scoped bronze manifests and watermark fail-closed behavior
+- repo-scoped incremental silver merges
+- stale label / assignee removal from current-state snapshots
+- dense daily spines and true 7-day rolling windows
+- DAG retry / timeout policy wiring
+
+If you want live-storage checks against MinIO after the local suite passes:
 
 ```bash
 uv run --group dev pytest -m integration
@@ -124,14 +135,17 @@ uv run --group dev pytest -m integration
 s3://gitpulse/
   bronze/github/issues/
     repo_owner=apache/repo_name=airflow/
-      extraction_date=2026-03-08/
-        page_001.parquet  ...  manifest.json
+      run_id=manual__2026-03-08T04-00-00Z/
+        page_001.parquet
+        page_002.parquet
+    manifests/
+      repo_owner=apache/repo_name=airflow/data.parquet
 
   silver/
     issue_current/repo_owner=apache/repo_name=airflow/data.parquet
     issue_labels/repo_owner=apache/repo_name=airflow/data.parquet
     issue_assignees/repo_owner=apache/repo_name=airflow/data.parquet
-    sync_state/data.parquet
+    sync_state/repo_owner=apache/repo_name=airflow/data.parquet
 
   gold/
     mart_issue_lifecycle/repo_owner=apache/repo_name=airflow/data.parquet
@@ -186,30 +200,32 @@ CREATE OR REPLACE SECRET minio (
 
 -- Silver views
 CREATE OR REPLACE VIEW silver_github_issue_current AS
-    SELECT * FROM read_parquet('s3://gitpulse/silver/issue_current/**/*.parquet', hive_partitioning=true, union_by_name=true);
+    SELECT * FROM read_parquet('s3://gitpulse/silver/issue_current/repo_owner=*/repo_name=*/*.parquet', hive_partitioning=true, union_by_name=true);
 CREATE OR REPLACE VIEW silver_github_issue_labels AS
-    SELECT * FROM read_parquet('s3://gitpulse/silver/issue_labels/**/*.parquet', hive_partitioning=true, union_by_name=true);
+    SELECT * FROM read_parquet('s3://gitpulse/silver/issue_labels/repo_owner=*/repo_name=*/*.parquet', hive_partitioning=true, union_by_name=true);
 CREATE OR REPLACE VIEW silver_github_issue_assignees AS
-    SELECT * FROM read_parquet('s3://gitpulse/silver/issue_assignees/**/*.parquet', hive_partitioning=true, union_by_name=true);
+    SELECT * FROM read_parquet('s3://gitpulse/silver/issue_assignees/repo_owner=*/repo_name=*/*.parquet', hive_partitioning=true, union_by_name=true);
 CREATE OR REPLACE VIEW silver_github_issue_sync_state AS
-    SELECT * FROM read_parquet('s3://gitpulse/silver/sync_state/**/*.parquet', hive_partitioning=true, union_by_name=true);
+    SELECT * FROM read_parquet('s3://gitpulse/silver/sync_state/repo_owner=*/repo_name=*/*.parquet', hive_partitioning=true, union_by_name=true);
 
 -- Gold views
 CREATE OR REPLACE VIEW gold_mart_issue_lifecycle AS
-    SELECT * FROM read_parquet('s3://gitpulse/gold/mart_issue_lifecycle/**/*.parquet', hive_partitioning=true, union_by_name=true);
+    SELECT * FROM read_parquet('s3://gitpulse/gold/mart_issue_lifecycle/repo_owner=*/repo_name=*/*.parquet', hive_partitioning=true, union_by_name=true);
 CREATE OR REPLACE VIEW gold_mart_issue_daily_flow AS
-    SELECT * FROM read_parquet('s3://gitpulse/gold/mart_issue_daily_flow/**/*.parquet', hive_partitioning=true, union_by_name=true);
+    SELECT * FROM read_parquet('s3://gitpulse/gold/mart_issue_daily_flow/repo_owner=*/repo_name=*/*.parquet', hive_partitioning=true, union_by_name=true);
 CREATE OR REPLACE VIEW gold_mart_issue_closure_age_monthly AS
-    SELECT * FROM read_parquet('s3://gitpulse/gold/mart_issue_closure_age_monthly/**/*.parquet', hive_partitioning=true, union_by_name=true);
+    SELECT * FROM read_parquet('s3://gitpulse/gold/mart_issue_closure_age_monthly/repo_owner=*/repo_name=*/*.parquet', hive_partitioning=true, union_by_name=true);
 CREATE OR REPLACE VIEW gold_mart_issue_weekday_rhythm AS
-    SELECT * FROM read_parquet('s3://gitpulse/gold/mart_issue_weekday_rhythm/**/*.parquet', hive_partitioning=true, union_by_name=true);
+    SELECT * FROM read_parquet('s3://gitpulse/gold/mart_issue_weekday_rhythm/repo_owner=*/repo_name=*/*.parquet', hive_partitioning=true, union_by_name=true);
 CREATE OR REPLACE VIEW gold_mart_issue_swing_days AS
-    SELECT * FROM read_parquet('s3://gitpulse/gold/mart_issue_swing_days/**/*.parquet', hive_partitioning=true, union_by_name=true);
+    SELECT * FROM read_parquet('s3://gitpulse/gold/mart_issue_swing_days/repo_owner=*/repo_name=*/*.parquet', hive_partitioning=true, union_by_name=true);
 ```
 
 > **Note:** `ENDPOINT` uses `minio:9000` (Docker service name), not `localhost:9000`. Both Metabase and MinIO run in the same Docker network.
 
 > **Note:** `Allow loading unsigned extensions` must be **on** — `httpfs` is an unsigned extension.
+
+> **Important:** Do not use `**/*.parquet` against `silver/` or `gold/` anymore. V1 now writes hive-partitioned datasets under `repo_owner=.../repo_name=...`, and broad globs can accidentally pull in legacy flat files such as `silver/sync_state/data.parquet`, which causes DuckDB hive partition binder errors in Metabase.
 
 ---
 
@@ -219,7 +235,11 @@ CREATE OR REPLACE VIEW gold_mart_issue_swing_days AS
 - Airflow 3.x auth: `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"` sets `username:role`, not the password. The password lives in `config/simple_auth_manager_passwords.json` as `{"admin": "admin"}`.
 - Fresh Airflow DB migration requires **two passes**: `airflow db migrate && airflow db migrate`. One pass stamps the DB at an intermediate revision and stops.
 - `MINIO_ENDPOINT` must be `minio:9000` (Docker service name) inside containers, not `localhost:9000`. Set it in the shared env block in `docker-compose.yml`, not only in `.env`, so it applies to Airflow tasks.
+- Bronze writes run-scoped delta pages plus a manifest history dataset. Silver only consumes the latest successful bronze run for the requested repo and merges that delta into the prior repo snapshot.
+- The default pytest suite runs the pipeline against local filesystem storage by setting `GITPULSE_STORAGE_BACKEND=local`; the Docker path continues to use MinIO/S3.
 - The GitHub API occasionally returns issues where `closed_at` is a few minutes before `created_at` (e.g. issue #57708 in apache/airflow, ~55-min gap). The DQ check allows a 1-hour tolerance for this known API artifact.
+- The 7-day charts now use a dense per-day date spine, so inactive days are zero-filled before rolling windows are computed.
+- This V1 remains snapshot-based. Reopened issues can still distort backlog direction because the pipeline does not yet ingest GitHub issue events/timeline history.
 - Metabase uses `:memory:` DuckDB + Init SQL that reads Parquet directly from MinIO via httpfs on every connection.
 - The `Dockerfile.metabase` uses `eclipse-temurin:21-jre-jammy` (Ubuntu/glibc) instead of the official Metabase Alpine image because DuckDB's native library requires glibc and is incompatible with Alpine's musl libc.
 

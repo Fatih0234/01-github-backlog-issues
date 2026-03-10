@@ -5,7 +5,7 @@ Weekly incremental sync of GitHub issues → Bronze → Silver → DQ → Gold �
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from airflow.sdk import dag, task
 
@@ -16,6 +16,11 @@ from airflow.sdk import dag, task
     start_date=datetime(2024, 1, 1),
     catchup=False,
     params={"repo_owner": "apache", "repo_name": "airflow"},
+    default_args={
+        "retries": 2,
+        "retry_delay": timedelta(minutes=5),
+        "execution_timeout": timedelta(minutes=30),
+    },
     tags=["github", "issues", "gitpulse"],
 )
 def github_issues_ingestion_v1():
@@ -24,37 +29,69 @@ def github_issues_ingestion_v1():
         import os
 
         from gitpulse.bronze.extract_issues import read_watermark, run_extraction
+        from gitpulse.runtime import RuntimeConfig
 
         p = context["params"]
         token = os.environ["GITHUB_TOKEN"]
-        since = read_watermark(p["repo_owner"], p["repo_name"])
-        run_extraction(token=token, repo_owner=p["repo_owner"], repo_name=p["repo_name"], since=since)
+        config = RuntimeConfig.from_env()
+        since = read_watermark(p["repo_owner"], p["repo_name"], config=config)
+        run_extraction(
+            token=token,
+            repo_owner=p["repo_owner"],
+            repo_name=p["repo_name"],
+            since=since,
+            config=config,
+        )
 
     @task
-    def process_silver():
+    def process_silver(**context):
         from gitpulse.silver.process_bronze_to_silver import run_silver
+        from gitpulse.runtime import RuntimeConfig
 
-        run_silver()
+        p = context["params"]
+        run_silver(
+            repo_owner=p["repo_owner"],
+            repo_name=p["repo_name"],
+            config=RuntimeConfig.from_env(),
+        )
 
     @task
     def run_dq(**context):
         from gitpulse.dq.run_checks import run_checks
+        from gitpulse.runtime import RuntimeConfig
 
         p = context["params"]
-        run_checks(repo_owner=p["repo_owner"], repo_name=p["repo_name"], mode="silver")
+        run_checks(
+            repo_owner=p["repo_owner"],
+            repo_name=p["repo_name"],
+            mode="silver",
+            config=RuntimeConfig.from_env(),
+        )
 
     @task
-    def build_gold():
+    def build_gold(**context):
         from gitpulse.gold.build_gold_marts import run_gold
+        from gitpulse.runtime import RuntimeConfig
 
-        run_gold()
+        p = context["params"]
+        run_gold(
+            repo_owner=p["repo_owner"],
+            repo_name=p["repo_name"],
+            config=RuntimeConfig.from_env(),
+        )
 
     @task
     def validate_gold(**context):
         from gitpulse.dq.run_checks import run_checks
+        from gitpulse.runtime import RuntimeConfig
 
         p = context["params"]
-        run_checks(repo_owner=p["repo_owner"], repo_name=p["repo_name"], mode="gold")
+        run_checks(
+            repo_owner=p["repo_owner"],
+            repo_name=p["repo_name"],
+            mode="gold",
+            config=RuntimeConfig.from_env(),
+        )
 
     @task
     def emit_summary(**context):

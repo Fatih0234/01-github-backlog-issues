@@ -1,0 +1,100 @@
+# GitHub REST API walkthrough for the GitPulse project
+# Uses VS Code REST Client dotenv syntax for the token:
+#   @token = {{$dotenv GITHUB_TOKEN}}
+# Place this .http file next to your .env file.
+#
+# Repo defaults match the project README:
+#   owner = apache
+#   repo  = airflow
+#   main-api-url = https://api.github.com 
+#
+
+
+@baseUrl = https://api.github.com
+@owner = apache
+@repo = airflow
+@token = {{$dotenv GITHUB_TOKEN}}
+
+# Replace this after you run one of the list-issues requests below.
+@issue_number = 1
+
+# Useful for demonstrating incremental ingestion.
+@since = 2026-01-01T00:00:00Z
+
+### 0) Optional: verify auth + show rate limits
+GET {{baseUrl}}/rate_limit
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
+
+### 1) Repository overview
+GET {{baseUrl}}/repos/{{owner}}/{{repo}}
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
+
+### 2) Core endpoint: list issues (page 1)
+GET {{baseUrl}}/repos/{{owner}}/{{repo}}/issues?state=all&sort=updated&direction=desc&per_page=5&page=1
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
+
+### 3) Same endpoint again: page 2
+GET {{baseUrl}}/repos/{{owner}}/{{repo}}/issues?state=all&sort=updated&direction=desc&per_page=5&page=2
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
+
+### 4) Incremental pull example using `since`
+GET {{baseUrl}}/repos/{{owner}}/{{repo}}/issues?state=all&sort=updated&direction=asc&since={{since}}&per_page=5&page=1
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
+
+### 5) Deep dive: one issue
+GET {{baseUrl}}/repos/{{owner}}/{{repo}}/issues/{{issue_number}}
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
+
+### 6) Labels attached to one issue
+GET {{baseUrl}}/repos/{{owner}}/{{repo}}/issues/{{issue_number}}/labels
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
+
+### 7) Optional: repository label catalogue
+GET {{baseUrl}}/repos/{{owner}}/{{repo}}/labels?per_page=20&page=1
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
+
+### 8) Optional: list assignable users for the repo
+GET {{baseUrl}}/repos/{{owner}}/{{repo}}/assignees?per_page=20&page=1
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
+
+### 9) Optional: timeline events for one issue
+GET {{baseUrl}}/repos/{{owner}}/{{repo}}/issues/{{issue_number}}/timeline?per_page=50&page=1
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
+
+### 10) Optional: repository-wide issue events
+GET {{baseUrl}}/repos/{{owner}}/{{repo}}/issues/events?per_page=10&page=1
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
+
+### 11) Optional: only open issues
+GET {{baseUrl}}/repos/{{owner}}/{{repo}}/issues?state=open&sort=created&direction=desc&per_page=10&page=1
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
+
+### 12) Optional: only closed issues
+GET {{baseUrl}}/repos/{{owner}}/{{repo}}/issues?state=closed&sort=updated&direction=desc&per_page=10&page=1
+Accept: application/vnd.github+json
+Authorization: Bearer {{token}}
+X-GitHub-Api-Version: 2022-11-28
